@@ -1,23 +1,61 @@
 import flwr as fl
 import tensorflow as tf
+import keras
+import argparse
 
-model = tf.keras.applications.MobileNetV2((32, 32, 3), classes=10, weights=None)
-model.compile("adam", "sparse_categorical_crossentropy", metrics=["accuracy"])
-(x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+from typing import Dict, Tuple
+from flwr.common import Scalar, NDArrays
+from model import get_model
 
-class CifarClient(fl.client.NumPyClient):
-  def get_parameters(self, config):
-    return model.get_weights()
 
-  def fit(self, parameters, config):
-    model.set_weights(parameters)
-    model.fit(x_train, y_train, epochs=1, batch_size=32)
-    return model.get_weights(), len(x_train), {}
+class Client(fl.client.NumPyClient):
+    def __init__(self, model: keras.Model, trainset: tf.data.Dataset, validset: tf.data.Dataset):
+        self.model = model
+        self.trainset = trainset
+        self.validset = validset
 
-  def evaluate(self, parameters, config):
-    model.set_weights(parameters)
-    loss, accuracy = model.evaluate(x_test, y_test)
-    return loss, len(x_test), {"accuracy": accuracy}
+    def get_parameters(self, config: Dict[str, Scalar]) -> NDArrays:
+        return self.model.get_weights()
 
-# Start Flower client
-fl.client.start_numpy_client(server_address="127.0.0.1:8080", client=CifarClient())
+    def fit(self, parameters: NDArrays, config: Dict[str, Scalar]) -> Tuple[NDArrays, int, Dict[str, Scalar]]:
+        self.model.set_weights(parameters)
+        self.model.fit(self.trainset, epochs=1, batch_size=32)
+        return self.model.get_weights(), len(self.trainset), {}
+
+    def evaluate(self, parameters: NDArrays, config: Dict[str, Scalar]) -> Tuple[float, int, Dict[str, Scalar]]:
+        self.model.set_weights(parameters)
+        loss, accuracy = self.model.evaluate(self.validset)
+        return loss, len(self.validset), {"accuracy": accuracy}
+
+
+def get_datasets(data_dir: str) -> tf.data.Dataset:
+    datasets = keras.utils.image_dataset_from_directory(
+        directory=data_dir,
+        validation_split=0.1,
+        subset="both",
+        color_mode="grayscale",
+        image_size=(100, 100),
+        shuffle=True,
+        batch_size=32,
+        seed=522437,
+    )
+    return datasets
+
+
+def main(server_address: str, data_dir: str) -> None:
+    trainset, validset = get_datasets(data_dir)
+    model = get_model()
+
+    fl.client.start_numpy_client(
+        server_address=server_address,
+        client=Client(model, trainset, validset)
+    )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Client')
+    parser.add_argument('--server-address', type=str, required=True)
+    parser.add_argument('--data-dir', type=str, required=True)
+    args = parser.parse_args()
+
+    main(server_address=args.server_address, data_dir=args.data_dir)

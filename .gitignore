@@ -3,4 +3,7 @@
 .vscode/
 
 # Virtual environment
-env/
+venv/
+
+# Cache
+__pycache__/
